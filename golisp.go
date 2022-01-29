@@ -54,6 +54,9 @@ func car(a LispValue) LispValue {
 	return nil
 }
 func cdr(a LispValue) LispValue {
+	if a == nil {
+		return nil
+	}
 	v, e := a.(*Cons)
 	if e {
 		return v.Cdr
@@ -135,16 +138,49 @@ func (l *LispContext) GetOrCreateSymbol(key string) *Symbol {
 	return l.Symbols.GetOrCreate(key)
 }
 
-func (l *LispContext) SubContext() {
+func (lisp *LispContext) Defbuiltin(name string, f func(values LispValue) LispValue) {
+	sym := lisp.Symbols.GetOrCreate(name)
+	lisp.Globals.Scope[sym] = Builtin{Invoke: f}
+}
 
+func (lisp *LispContext) Defbuiltin1(name string, f func(values LispValue) LispValue) {
+	sym := lisp.Symbols.GetOrCreate(name)
+	lisp.Globals.Scope[sym] = f
+}
+func (lisp *LispContext) Defbuiltin2(name string, f func(a, b LispValue) LispValue) {
+	sym := lisp.Symbols.GetOrCreate(name)
+	lisp.Globals.Scope[sym] = f
+}
+
+func DefbuiltinAcc[T any](lisp *LispContext, name string, f func(b, a T) T) {
+	sym := lisp.Symbols.GetOrCreate(name)
+
+	lisp.Globals.Scope[sym] = Builtin{Invoke: func(values LispValue) LispValue {
+		var acc T = car(values).(T)
+		for i := cdr(values); i != nil; i = cdr(i) {
+			acc = f(acc, car(i).(T))
+		}
+		return acc
+	}}
 }
 
 func NewLispContext() LispContext {
-	v := LispContext{
+	lisp := LispContext{
 		Globals: NewLispScope(),
 		Symbols: SymbolTable{
 			Symbols: make(map[string]*WeakRef)}}
-	return v
+
+	DefbuiltinAcc(&lisp, "+", func(a, b int64) int64 { return a + b })
+	DefbuiltinAcc(&lisp, "*", func(a, b int64) int64 { return a * b })
+	DefbuiltinAcc(&lisp, "-", func(a, b int64) int64 { return a - b })
+	DefbuiltinAcc(&lisp, "/", func(a, b int64) int64 { return a / b })
+
+	lisp.Defbuiltin2("cons", func(x, y LispValue) LispValue { return cons(x, y) })
+	lisp.Defbuiltin1("car", func(x LispValue) LispValue { return car(x) })
+	lisp.Defbuiltin1("cdr", func(x LispValue) LispValue { return cdr(x) })
+	lisp.Defbuiltin1("print", func(x LispValue) LispValue { fmt.Print(x, "\n"); return x })
+
+	return lisp
 }
 
 type TokenType string
@@ -166,10 +202,9 @@ type ParserContext struct {
 	writeBuffer WriteBuffer
 }
 
-func (l *LispContext) EvalString(str string) {
-	log.Printf("Parsing %v", str)
+func (l *LispContext) EvalString(str string) LispValue {
 	rd := strings.NewReader(str)
-	l.EvalStream(bufio.NewReader(rd))
+	return l.EvalStream(bufio.NewReader(rd))
 }
 
 func (lisp *LispContext) ReadToken(token Token) LispValue {
@@ -216,61 +251,22 @@ type Lambda *Cons
 func (lisp *LispContext) EvalStream(r *bufio.Reader) LispValue {
 	ctx := ParserContext{}
 
-	symPlus := lisp.Symbols.GetOrCreate("+")
-	lisp.Globals.Scope[symPlus] = Builtin{Invoke: func(values LispValue) LispValue {
-		log.Println(">>>>> ", values)
-		var acc int64 = 0
-		for i := values; i != nil; i = cdr(i) {
-			x := car(i).(int64)
-			acc = acc + x
-		}
-		return acc
-	}}
-
-	symSub := lisp.Symbols.GetOrCreate("-")
-	lisp.Globals.Scope[symSub] = Builtin{Invoke: func(values LispValue) LispValue {
-		var acc int64 = 0
-		for i := values; i != nil; i = cdr(i) {
-
-			x := car(i).(int64)
-			if i == values {
-				acc = x
-			} else {
-				acc = acc - x
-			}
-		}
-		return acc
-	}}
-
-	symMul := lisp.Symbols.GetOrCreate("*")
-	lisp.Globals.Scope[symMul] = Builtin{Invoke: func(values LispValue) LispValue {
-		var acc int64 = 0
-		for i := values; i != nil; i = cdr(i) {
-
-			x := car(i).(int64)
-			if i == values {
-				acc = x
-			} else {
-				acc = acc * x
-			}
-		}
-		return acc
-	}}
-
 	ctx.writeBuffer = bytes.NewBuffer(make([]byte, 1))
+	var result LispValue
 	for {
 		t := TokenizeStream(ctx, r)
-		log.Printf(";. %v", t)
+		if t.Type == None {
+			return result
+		}
 		t2 := lisp.ReadToken(t)
-		log.Printf(";. %v", t2)
-		r := EvalLisp(&lisp.Globals, t2)
+		result = EvalLisp(&lisp.Globals, t2)
 
-		log.Printf(">> %v", r)
+		//log.Printf(">> %v", result)
 		if t.Type == None {
 			break
 		}
 	}
-	return nil
+	return result
 }
 
 func (l *LispScope) Let(argForm LispValue) *LispScope {
@@ -300,7 +296,7 @@ func EvalLisp(scope *LispScope, v LispValue) LispValue {
 		if sym.Name == "lambda" {
 			args, ok := cadr(cns).(*Cons)
 			body, ok2 := cddr(cns).(*Cons)
-			if !ok {
+			if args != nil && !ok {
 				log.Fatal("args")
 			}
 			if !ok2 {
@@ -355,25 +351,44 @@ func EvalLisp(scope *LispScope, v LispValue) LispValue {
 
 	if ok {
 		scope2 := l.scope.SubScope()
-		var args2 LispValue = l.args
-		for a, j := args2, cdr(args[0]).(LispValue); a != nil && j != nil; a, j = cdr(a), cdr(j) {
-			t1, t2 := car(a).(*Symbol), car(j)
-			scope2.OverwriteValue(t1, t2)
+		args2 := l.args
+
+		if args2 != nil { // nil as LispValue is different from nil
+			var args3 LispValue = args2
+			for a, j := args3, cdr(args[0]).(LispValue); a != nil && j != nil; a, j = cdr(a), cdr(j) {
+				t1, t2 := car(a).(*Symbol), car(j)
+				scope2.OverwriteValue(t1, t2)
+			}
 		}
+
 		var result LispValue
 		for bodyIt := l.body; bodyIt != nil; bodyIt = cdr(bodyIt) {
-			EvalLisp(scope2, car(bodyIt))
+			result = EvalLisp(scope2, car(bodyIt))
 		}
 		return result
 	}
 
 	switch len(args) {
-	case 0:
+	case 1:
 		f, ok := fval.(func() LispValue)
 		if ok {
 			return f()
 		}
 		break
+	case 2:
+		f, ok := fval.(func(LispValue) LispValue)
+		if ok {
+			return f(car(args[1]))
+		}
+		break
+	case 3:
+		f, ok := fval.(func(a, b LispValue) LispValue)
+		if ok {
+			return f(car(args[1]), car(args[2]))
+		}
+		break
+	default:
+		log.Fatal("Unsupported number of args.")
 	}
 
 	log.Fatal("Cannot handle function", sym, fst)
@@ -495,7 +510,6 @@ func (s *SymbolTable) GetOrCreate(key string) *Symbol {
 		if ok {
 			return value
 		}
-
 	}
 	r := &Symbol{Name: key}
 	s.Symbols[key] = NewWeakRef(r)
