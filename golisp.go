@@ -65,12 +65,19 @@ func cdr(a LispValue) LispValue {
 }
 func caddr(a LispValue) LispValue {
 	return car(cddr(a))
+
+}
+func cadddr(a LispValue) LispValue {
+	return car(cdddr(a))
 }
 func cadr(a LispValue) LispValue {
 	return car(cdr(a))
 }
 func cddr(a LispValue) LispValue {
 	return cdr(cdr(a))
+}
+func cdddr(a LispValue) LispValue {
+	return cdr(cddr(a))
 }
 
 //func setf(place LispValue, value LispValue) LispValue {
@@ -129,11 +136,6 @@ type LispContext struct {
 	Globals LispScope
 }
 
-func (l *LispContext) GetSymbol(key string) *Symbol {
-	s := l.Symbols.Get(key)
-	return s
-}
-
 func (l *LispContext) GetOrCreateSymbol(key string) *Symbol {
 	return l.Symbols.GetOrCreate(key)
 }
@@ -174,13 +176,36 @@ func NewLispContext() LispContext {
 	DefbuiltinAcc(&lisp, "*", func(a, b int64) int64 { return a * b })
 	DefbuiltinAcc(&lisp, "-", func(a, b int64) int64 { return a - b })
 	DefbuiltinAcc(&lisp, "/", func(a, b int64) int64 { return a / b })
+	//DefbuiltinAcc(&lisp, "<", func(a, b int64) int64 { return a < b })
+
+	test := func(r bool) LispValue {
+		if r {
+			return r
+		}
+		return nil
+	}
+
+	lisp.Defbuiltin2("<", func(x, y LispValue) LispValue { return test(x.(int64) < y.(int64)) })
+	lisp.Defbuiltin2(">", func(x, y LispValue) LispValue { return test(x.(int64) > y.(int64)) })
+	lisp.Defbuiltin2("=", func(x, y LispValue) LispValue { return test(x == y) })
 
 	lisp.Defbuiltin2("cons", func(x, y LispValue) LispValue { return cons(x, y) })
 	lisp.Defbuiltin1("car", func(x LispValue) LispValue { return car(x) })
 	lisp.Defbuiltin1("cdr", func(x LispValue) LispValue { return cdr(x) })
 	lisp.Defbuiltin1("print", func(x LispValue) LispValue { fmt.Print(x, "\n"); return x })
 
+	lisp.Globals.Scope[lisp.Symbols.GetOrCreate("nil")] = nil
+	lisp.Globals.Scope[lisp.Symbols.GetOrCreate("quote")] = MacroFunction{
+		function: func(x LispValue) LispValue { return x },
+		varadic:  true,
+	}
+
 	return lisp
+}
+
+type MacroFunction struct {
+	function LispValue
+	varadic  bool
 }
 
 type TokenType string
@@ -259,9 +284,10 @@ func (lisp *LispContext) EvalStream(r *bufio.Reader) LispValue {
 			return result
 		}
 		t2 := lisp.ReadToken(t)
-		result = EvalLisp(&lisp.Globals, t2)
-
-		//log.Printf(">> %v", result)
+		log.Println("pre expand", t2)
+		t3 := lisp.MacroExpand(&lisp.Globals, t2)
+		log.Println("Post expand", t3)
+		result = EvalLisp(&lisp.Globals, t3)
 		if t.Type == None {
 			break
 		}
@@ -278,6 +304,72 @@ type LambdaFunction struct {
 	scope *LispScope
 	body  LispValue
 	args  *Cons
+}
+
+func (lisp *LispContext) MacroExpandCons(scope *LispScope, c *Cons) *Cons {
+	r := lisp.MacroExpand(scope, car(c))
+	next, ok := c.Cdr.(*Cons)
+	if ok {
+		exp := lisp.MacroExpandCons(scope, next)
+		if exp == next && r == car(c) {
+			return c
+		}
+		return cons(r, exp)
+	} else if r == car(c) {
+		return c
+	}
+	return cons(r, nil)
+}
+
+func (lisp *LispContext) MacroExpand(scope *LispScope, v LispValue) LispValue {
+	cns, ok := v.(*Cons)
+	if !ok {
+		return v
+	}
+	cns = lisp.MacroExpandCons(scope, cns)
+
+	fst := car(cns)
+	sym, ok := fst.(*Symbol)
+	if !ok {
+		return cns
+	}
+	if ok {
+		m, ok := scope.GetValue(sym).(MacroFunction)
+		if !ok {
+			return cns
+		}
+		l, ok := m.function.(LambdaFunction)
+		if !ok {
+			return cns
+		}
+		if ok {
+			scope2 := l.scope.SubScope()
+			args2 := l.args
+
+			if args2 != nil { // nil as LispValue is different from nil
+				var args3 LispValue = args2
+
+				for a, j := args3, cdr(cns).(LispValue); a != nil && j != nil; a, j = cdr(a), cdr(j) {
+					t1, t2 := car(a).(*Symbol), car(j)
+					if t1.Name == "&rest" {
+						t1 = cadr(a).(*Symbol)
+						t2 = j
+						scope2.OverwriteValue(t1, t2)
+						break
+					} else {
+						scope2.OverwriteValue(t1, t2)
+					}
+				}
+			}
+
+			var result LispValue
+			for bodyIt := l.body; bodyIt != nil; bodyIt = cdr(bodyIt) {
+				result = EvalLisp(scope2, car(bodyIt))
+			}
+			return result
+		}
+	}
+	return cns
 }
 
 func EvalLisp(scope *LispScope, v LispValue) LispValue {
@@ -325,9 +417,33 @@ func EvalLisp(scope *LispScope, v LispValue) LispValue {
 				scope.TopScope().OverwriteValue(name.(*Symbol), r)
 			} else {
 				scope.SetValue(name.(*Symbol), r)
-
 			}
 			return r
+		}
+		if sym.Name == "if" {
+			testForm := cadr(cns)
+			trueForm := caddr(cns)
+			falseForm := cadddr(cns)
+			test := EvalLisp(scope, testForm)
+			if test == nil {
+				return EvalLisp(scope, falseForm)
+			}
+
+			return EvalLisp(scope, trueForm)
+		}
+		if sym.Name == "quote" {
+			return cdr(cns)
+		}
+		if sym.Name == "macro" {
+			body := cadr(cns)
+			lambda, ok := EvalLisp(scope, body).(LambdaFunction)
+			if !ok {
+				log.Fatal("Body of macro must be a lambda")
+			}
+			return MacroFunction{
+				function: lambda,
+			}
+
 		}
 	}
 
@@ -355,9 +471,17 @@ func EvalLisp(scope *LispScope, v LispValue) LispValue {
 
 		if args2 != nil { // nil as LispValue is different from nil
 			var args3 LispValue = args2
+
 			for a, j := args3, cdr(args[0]).(LispValue); a != nil && j != nil; a, j = cdr(a), cdr(j) {
 				t1, t2 := car(a).(*Symbol), car(j)
-				scope2.OverwriteValue(t1, t2)
+				if t1.Name == "&rest" {
+					t1 = cadr(a).(*Symbol)
+					t2 = j
+					scope2.OverwriteValue(t1, t2)
+					break
+				} else {
+					scope2.OverwriteValue(t1, t2)
+				}
 			}
 		}
 
@@ -514,16 +638,4 @@ func (s *SymbolTable) GetOrCreate(key string) *Symbol {
 	r := &Symbol{Name: key}
 	s.Symbols[key] = NewWeakRef(r)
 	return r
-}
-func (s *SymbolTable) Get(key string) *Symbol {
-
-	v, ok := s.Symbols[key]
-	if ok {
-		value, ok := v.GetTarget().(*Symbol)
-		if ok {
-			return value
-		}
-	}
-	return nil
-
 }
