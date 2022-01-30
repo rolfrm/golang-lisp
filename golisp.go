@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"fmt"
 	"log"
+	"os"
 	"strconv"
 	"strings"
 	"unicode"
@@ -193,6 +194,7 @@ func NewLispContext() LispContext {
 	lisp.Defbuiltin1("car", func(x LispValue) LispValue { return car(x) })
 	lisp.Defbuiltin1("cdr", func(x LispValue) LispValue { return cdr(x) })
 	lisp.Defbuiltin1("print", func(x LispValue) LispValue { fmt.Print(x, "\n"); return x })
+	lisp.Defbuiltin1("error", func(x LispValue) LispValue { log.Panic(x); return x })
 
 	lisp.Globals.Scope[lisp.Symbols.GetOrCreate("nil")] = nil
 	lisp.Globals.Scope[lisp.Symbols.GetOrCreate("quote")] = MacroFunction{
@@ -229,6 +231,14 @@ type ParserContext struct {
 
 func (l *LispContext) EvalString(str string) LispValue {
 	rd := strings.NewReader(str)
+	return l.EvalStream(bufio.NewReader(rd))
+}
+
+func (l *LispContext) EvalFile(file string) LispValue {
+	rd, e := os.Open(file)
+	if e != nil {
+		return e
+	}
 	return l.EvalStream(bufio.NewReader(rd))
 }
 
@@ -432,7 +442,7 @@ func EvalLisp(scope *LispScope, v LispValue) LispValue {
 			return EvalLisp(scope, trueForm)
 		}
 		if sym.Name == "quote" {
-			return cdr(cns)
+			return cadr(cns)
 		}
 		if sym.Name == "macro" {
 			body := cadr(cns)
