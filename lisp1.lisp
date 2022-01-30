@@ -22,6 +22,14 @@
     (append (quote when) (list (quote not) test) body)
 )
 
+(defun map! (f lst) 
+    (loop lst 
+        (progn 
+            (f (car lst))
+            (set lst (cdr lst))
+        )
+    ))
+
 (defun print-hello-world () 
     (print "hello") 
     (print "world"))
@@ -44,14 +52,31 @@
 (unless nil (print-hello-world))
 (defun do-times (n f2)
     (let ((x 0)) ;; hej hej
-    (let ((f (lambda ()
-        (set x (+ 1 x))
-        (f2)
-        (when (< x n) (f))    
-    )))
-    (f))
-)
+    (loop (< x n)
+        (progn 
+            (set x (+ 1 x))
+            (f2))
+    ))
 )
 
 ;; now print hello world five times.
-(do-times 5 print-hello-world)
+(do-times 1 print-hello-world)
+
+(progn 
+"
+(print 
+    (quote 
+        (model :name fox
+            (transform :translate (1 1)
+                (polygon :color (1 0 0 1)
+                    (vertex-strip 0 0 0 
+                                  1 0 0
+                                  0 1 0)
+                )
+            )
+        )
+))"
+)
+
+(map! print (list 1 2 3))
+;(print (make-hashtable))
