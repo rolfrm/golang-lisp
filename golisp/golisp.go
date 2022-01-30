@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"unicode"
@@ -80,10 +81,6 @@ func cddr(a LispValue) LispValue {
 func cdddr(a LispValue) LispValue {
 	return cdr(cddr(a))
 }
-
-//func setf(place LispValue, value LispValue) LispValue {
-
-//}
 
 type LispScope struct {
 	UpScope *LispScope
@@ -167,17 +164,115 @@ func DefbuiltinAcc[T any](lisp *LispContext, name string, f func(b, a T) T) {
 	}}
 }
 
+type Number interface {
+	int64 | float64
+}
+
+func fixTypes(a, b LispValue) (LispValue, LispValue) {
+	switch v := a.(type) {
+	case int64:
+		switch v2 := b.(type) {
+		case int64:
+			return v, v2
+		case float64:
+			return float64(v), v2
+		}
+	case float64:
+		switch v2 := b.(type) {
+		case int64:
+			return v, float64(v2)
+		case float64:
+			return v, v2
+		}
+	}
+	return a, b
+}
+
+func genAdd(a, b LispValue) LispValue {
+	a, b = fixTypes(a, b)
+	switch v := a.(type) {
+	case int64:
+		return v + b.(int64)
+	case float64:
+		return v + b.(float64)
+	}
+	return a
+}
+
+func genSub(a, b LispValue) LispValue {
+	a, b = fixTypes(a, b)
+	switch v := a.(type) {
+	case int64:
+		return v - b.(int64)
+	case float64:
+		return v - b.(float64)
+	}
+	return a
+}
+func genMul(a, b LispValue) LispValue {
+	a, b = fixTypes(a, b)
+	switch v := a.(type) {
+	case int64:
+		return v * b.(int64)
+	case float64:
+		return v * b.(float64)
+	}
+	return a
+}
+func genDiv(a, b LispValue) LispValue {
+	a, b = fixTypes(a, b)
+	switch v := a.(type) {
+	case int64:
+		return v / b.(int64)
+	case float64:
+		return v / b.(float64)
+	}
+	return a
+}
+func genLt(a, b LispValue) LispValue {
+	a, b = fixTypes(a, b)
+	switch v := a.(type) {
+	case int64:
+		if v < b.(int64) {
+			return true
+		}
+		return nil
+	case float64:
+		if v < b.(float64) {
+			return true
+		}
+		return nil
+	}
+	return a
+}
+
+func genGt(a, b LispValue) LispValue {
+	a, b = fixTypes(a, b)
+	switch v := a.(type) {
+	case int64:
+		if v > b.(int64) {
+			return true
+		}
+		return nil
+	case float64:
+		if v > b.(float64) {
+			return true
+		}
+		return nil
+	}
+	return a
+}
+
 func NewLispContext() LispContext {
 	lisp := LispContext{
 		Globals: NewLispScope(),
 		Symbols: SymbolTable{
 			Symbols: make(map[string]*WeakRef)}}
 
-	DefbuiltinAcc(&lisp, "+", func(a, b int64) int64 { return a + b })
-	DefbuiltinAcc(&lisp, "*", func(a, b int64) int64 { return a * b })
-	DefbuiltinAcc(&lisp, "-", func(a, b int64) int64 { return a - b })
-	DefbuiltinAcc(&lisp, "/", func(a, b int64) int64 { return a / b })
-	//DefbuiltinAcc(&lisp, "<", func(a, b int64) int64 { return a < b })
+	DefbuiltinAcc(&lisp, "+", genAdd)
+	DefbuiltinAcc(&lisp, "*", genMul)
+	DefbuiltinAcc(&lisp, "-", genSub)
+	DefbuiltinAcc(&lisp, "/", genDiv)
 
 	test := func(r bool) LispValue {
 		if r {
@@ -186,8 +281,8 @@ func NewLispContext() LispContext {
 		return nil
 	}
 
-	lisp.Defbuiltin2("<", func(x, y LispValue) LispValue { return test(x.(int64) < y.(int64)) })
-	lisp.Defbuiltin2(">", func(x, y LispValue) LispValue { return test(x.(int64) > y.(int64)) })
+	lisp.Defbuiltin2("<", genLt)
+	lisp.Defbuiltin2(">", genGt)
 	lisp.Defbuiltin2("=", func(x, y LispValue) LispValue { return test(x == y) })
 
 	lisp.Defbuiltin2("cons", func(x, y LispValue) LispValue { return cons(x, y) })
@@ -195,6 +290,7 @@ func NewLispContext() LispContext {
 	lisp.Defbuiltin1("cdr", func(x LispValue) LispValue { return cdr(x) })
 	lisp.Defbuiltin1("print", func(x LispValue) LispValue { fmt.Print(x, "\n"); return x })
 	lisp.Defbuiltin1("error", func(x LispValue) LispValue { log.Panic(x); return x })
+	lisp.Defbuiltin("type-of", func(x LispValue) LispValue { return reflect.TypeOf(x) })
 
 	lisp.Globals.Scope[lisp.Symbols.GetOrCreate("nil")] = nil
 	lisp.Globals.Scope[lisp.Symbols.GetOrCreate("quote")] = MacroFunction{
@@ -294,10 +390,15 @@ func (lisp *LispContext) EvalStream(r *bufio.Reader) LispValue {
 			return result
 		}
 		t2 := lisp.ReadToken(t)
-		log.Println("pre expand", t2)
-		t3 := lisp.MacroExpand(&lisp.Globals, t2)
-		log.Println("Post expand", t3)
-		result = EvalLisp(&lisp.Globals, t3)
+		for {
+
+			t3 := lisp.MacroExpand(&lisp.Globals, t2)
+			if t2 == t3 {
+				break
+			}
+			t2 = t3
+		}
+		result = EvalLisp(&lisp.Globals, t2)
 		if t.Type == None {
 			break
 		}
@@ -430,6 +531,12 @@ func EvalLisp(scope *LispScope, v LispValue) LispValue {
 			}
 			return r
 		}
+		if sym.Name == "progn" {
+			for i := cdr(cns); i != nil; i = cdr(i) {
+				EvalLisp(scope, car(i))
+			}
+			return nil
+		}
 		if sym.Name == "if" {
 			testForm := cadr(cns)
 			trueForm := caddr(cns)
@@ -476,21 +583,26 @@ func EvalLisp(scope *LispScope, v LispValue) LispValue {
 	l, ok := fval.(LambdaFunction)
 
 	if ok {
-		scope2 := l.scope.SubScope()
+		scope2 := l.scope
 		args2 := l.args
 
 		if args2 != nil { // nil as LispValue is different from nil
-			var args3 LispValue = args2
 
-			for a, j := args3, cdr(args[0]).(LispValue); a != nil && j != nil; a, j = cdr(a), cdr(j) {
-				t1, t2 := car(a).(*Symbol), car(j)
-				if t1.Name == "&rest" {
-					t1 = cadr(a).(*Symbol)
-					t2 = j
-					scope2.OverwriteValue(t1, t2)
-					break
-				} else {
-					scope2.OverwriteValue(t1, t2)
+			var args3 LispValue = args2
+			args4, ok := cdr(args[0]).(LispValue)
+			if ok {
+				scope2 = scope2.SubScope()
+
+				for a, j := args3, args4; a != nil && j != nil; a, j = cdr(a), cdr(j) {
+					t1, t2 := car(a).(*Symbol), car(j)
+					if t1.Name == "&rest" {
+						t1 = cadr(a).(*Symbol)
+						t2 = j
+						scope2.OverwriteValue(t1, t2)
+						break
+					} else {
+						scope2.OverwriteValue(t1, t2)
+					}
 				}
 			}
 		}
@@ -530,14 +642,15 @@ func EvalLisp(scope *LispScope, v LispValue) LispValue {
 }
 
 func TokenizeStream(ctx ParserContext, r *bufio.Reader) Token {
-	skipWhiteSpace(ctx, r)
+	skipCommentAndWhiteSpace(ctx, r)
 	rune, _, _ := r.ReadRune()
+
 	if rune == '(' {
 		lst := []Token{}
 		for {
 
 			tk := TokenizeStream(ctx, r)
-			skipWhiteSpace(ctx, r)
+			skipCommentAndWhiteSpace(ctx, r)
 			if tk.Type == None {
 				break
 			}
@@ -584,6 +697,21 @@ func skipWhiteSpace(ctx ParserContext, r *bufio.Reader) {
 	readRunes(r, ctx.writeBuffer, func(x rune) bool { return unicode.IsSpace(x) })
 }
 
+func skipCommentAndWhiteSpace(ctx ParserContext, r *bufio.Reader) {
+	ctx.writeBuffer.Reset()
+	for {
+		start := len(ctx.writeBuffer.Bytes())
+		readRunes(r, ctx.writeBuffer, func(x rune) bool { return unicode.IsSpace(x) })
+		if peekRune(r) == ';' {
+			readRunes(r, ctx.writeBuffer, func(x rune) bool { return x != '\n' })
+		}
+		end := len(ctx.writeBuffer.Bytes())
+		if start == end {
+			break
+		}
+	}
+}
+
 func readString(ctx ParserContext, r *bufio.Reader) []byte {
 
 	if peekRune(r) != '"' {
@@ -610,7 +738,7 @@ func readTokenData(ctx ParserContext, r *bufio.Reader) Token {
 		return Token{Data: string(str), Type: StringToken}
 	}
 	ctx.writeBuffer.Reset()
-	readRunes(r, ctx.writeBuffer, func(x rune) bool { return !(unicode.IsSpace(x) || x == ')' || x == '(') })
+	readRunes(r, ctx.writeBuffer, func(x rune) bool { return !(unicode.IsSpace(x) || x == ')' || x == '(' || x == ';') })
 	b := ctx.writeBuffer.Bytes()
 	if len(b) == 0 {
 		return Token{Type: None}
