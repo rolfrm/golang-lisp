@@ -43,14 +43,13 @@ func (c *cons) String() string {
 			sb.WriteString(")")
 			break
 		}
-
 	}
 	return sb.String()
 }
 
 func Car(a LispValue) LispValue {
-	v, e := a.(*cons)
-	if e {
+	v, ok := a.(*cons)
+	if ok {
 		return v.Car
 	}
 	return nil
@@ -152,7 +151,13 @@ func (lisp *LispContext) Defbuiltin1(name string, f func(values LispValue) LispV
 	sym := lisp.Symbols.GetOrCreate(name)
 	lisp.Globals.Scope[sym] = f
 }
+
 func (lisp *LispContext) Defbuiltin2(name string, f func(a, b LispValue) LispValue) {
+	sym := lisp.Symbols.GetOrCreate(name)
+	lisp.Globals.Scope[sym] = f
+}
+
+func (lisp *LispContext) Register(name string, f interface{}) {
 	sym := lisp.Symbols.GetOrCreate(name)
 	lisp.Globals.Scope[sym] = f
 }
@@ -293,13 +298,17 @@ func NewLispContext() LispContext {
 	lisp.Defbuiltin2("cons", func(x, y LispValue) LispValue { return Cons(x, y) })
 	lisp.Defbuiltin1("car", func(x LispValue) LispValue { return Car(x) })
 	lisp.Defbuiltin1("cdr", func(x LispValue) LispValue { return Cdr(x) })
+	lisp.Defbuiltin1("cadr", Cadr)
+	lisp.Defbuiltin1("caddr", Caddr)
+	lisp.Defbuiltin1("cadddr", Cadddr)
 	lisp.Defbuiltin1("print", func(x LispValue) LispValue { fmt.Print(x, "\n"); return x })
 	lisp.Defbuiltin1("error", func(x LispValue) LispValue { log.Panic(x); return x })
 	lisp.Defbuiltin("type-of", func(x LispValue) LispValue { return reflect.TypeOf(x) })
-
-	lisp.Defbuiltin0("make-hashtable", func() LispValue {
+	log.Println("make hashtable")
+	lisp.Register("make-hashtable", func() map[LispValue]LispValue {
 		return make(map[LispValue]LispValue)
 	})
+
 	lisp.Defbuiltin1("load", func(path LispValue) LispValue {
 		return lisp.EvalFile(path.(string))
 	})
@@ -529,7 +538,11 @@ func EvalLisp(scope *LispScope, v LispValue) LispValue {
 				value := EvalLisp(scope2, Cadr(nv))
 				scope.OverwriteValue(name, value)
 			}
-			return EvalLisp(scope2, Car(bodyForm))
+			var r LispValue = nil
+			for i := bodyForm; i != nil; i = Cdr(i) {
+				r = EvalLisp(scope2, Car(i))
+			}
+			return r
 		}
 		if sym.Name == "set" || sym.Name == "define" {
 			name := Cadr(cns)
@@ -544,10 +557,11 @@ func EvalLisp(scope *LispScope, v LispValue) LispValue {
 			return r
 		}
 		if sym.Name == "progn" {
+			var r LispValue = nil
 			for i := Cdr(cns); i != nil; i = Cdr(i) {
-				EvalLisp(scope, Car(i))
+				r = EvalLisp(scope, Car(i))
 			}
-			return nil
+			return r
 		}
 		if sym.Name == "if" {
 			testForm := Cadr(cns)
@@ -579,7 +593,6 @@ func EvalLisp(scope *LispScope, v LispValue) LispValue {
 			return MacroFunction{
 				function: lambda,
 			}
-
 		}
 	}
 
@@ -656,7 +669,15 @@ func EvalLisp(scope *LispScope, v LispValue) LispValue {
 		log.Fatal("Unsupported number of args.")
 	}
 
-	log.Fatal("Cannot handle function ", sym, fst, args)
+	values := make([]reflect.Value, len(args)-1)
+	for i, v := range args[1:] {
+		values[i] = reflect.ValueOf(Car(v))
+	}
+
+	r := reflect.ValueOf(fval).Call(values)
+	if len(r) > 0 {
+		return r[0].Interface()
+	}
 	return nil
 }
 

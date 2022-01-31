@@ -79,4 +79,4 @@
 )
 
 (map! print (list 1 2 3))
-;(print (make-hashtable))
+(print (make-hashtable))
