@@ -575,11 +575,14 @@ func EvalLisp(scope *LispScope, v LispValue) LispValue {
 		}
 		if sym.Name == "loop" {
 			testForm := Cadr(cns)
-			evalForm := Caddr(cns)
+			evalForm := Cddr(cns)
+			var r LispValue = nil
 			for EvalLisp(scope, testForm) != nil {
-				EvalLisp(scope, evalForm)
+				for i := evalForm; i != nil; i = Cdr(i) {
+					r = EvalLisp(scope, Car(i))
+				}
 			}
-			return nil
+			return r
 		}
 		if sym.Name == "quote" {
 			return Cadr(cns)
