@@ -297,6 +297,10 @@ func NewLispContext() LispContext {
 
 	lisp.Defbuiltin2("cons", func(x, y LispValue) LispValue { return Cons(x, y) })
 	lisp.Defbuiltin1("car", func(x LispValue) LispValue { return Car(x) })
+	lisp.Defbuiltin("cons?", func(x LispValue) LispValue {
+		_, ok := x.(*cons)
+		return test(ok)
+	})
 	lisp.Defbuiltin1("cdr", func(x LispValue) LispValue { return Cdr(x) })
 	lisp.Defbuiltin1("cadr", Cadr)
 	lisp.Defbuiltin1("caddr", Caddr)
@@ -668,16 +672,34 @@ func EvalLisp(scope *LispScope, v LispValue) LispValue {
 			return f(Car(args[1]), Car(args[2]))
 		}
 		break
-	default:
-		log.Fatal("Unsupported number of args.")
 	}
 
 	values := make([]reflect.Value, len(args)-1)
+	rval := reflect.ValueOf(fval)
+	rvalt := rval.Type()
 	for i, v := range args[1:] {
-		values[i] = reflect.ValueOf(Car(v))
+		gv := Car(v)
+		val := reflect.ValueOf(gv)
+
+		if xt, targ := val.Type(), rvalt.In(i); !xt.AssignableTo(targ) {
+			f64, ok := gv.(float64)
+			if ok && targ.Kind() == reflect.Float32 {
+				val = reflect.ValueOf(float32(f64))
+			} else if ok && targ.Kind() == reflect.Int64 {
+				val = reflect.ValueOf(int64(f64))
+			}
+
+		}
+		values[i] = val
+
 	}
 
-	r := reflect.ValueOf(fval).Call(values)
+	defer func() {
+		if err := recover(); err != nil {
+			log.Printf("panic occurred at %v: %v", v, err)
+		}
+	}()
+	r := rval.Call(values)
 	if len(r) > 0 {
 		return r[0].Interface()
 	}
